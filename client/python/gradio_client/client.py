@@ -306,7 +306,7 @@ class Client:
         )
 
         if result_callbacks:
-            if isinstance(result_callbacks, Callable):
+            if callable(result_callbacks):
                 result_callbacks = [result_callbacks]
 
             def create_fn(callback) -> Callable:
