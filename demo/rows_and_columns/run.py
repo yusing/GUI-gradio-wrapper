@@ -1,3 +1,4 @@
+import os
 import gradio as gr
 
 with gr.Blocks() as demo:
@@ -13,7 +14,9 @@ with gr.Blocks() as demo:
             text4 = gr.Textbox(label="prompt 1")
             text5 = gr.Textbox(label="prompt 2")
         with gr.Column(scale=2, min_width=600):
-            img1 = gr.Image("images/cheetah.jpg")
+            img1 = gr.Image(
+                os.path.join(os.path.dirname(__file__), "images/cheetah.jpg")
+            )
             btn = gr.Button("Go").style(full_width=True)
 
 if __name__ == "__main__":

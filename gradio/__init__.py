@@ -4,6 +4,7 @@ faulthandler.enable()
 import dearpygui.dearpygui as dpg
 
 dpg.create_context()
+dpg.configure_app(manual_callback_management=True)
 
 import gradio.processing_utils
 from gradio.blocks import Block, Blocks

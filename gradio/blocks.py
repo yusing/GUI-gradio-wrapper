@@ -1,15 +1,15 @@
 import json
 import threading
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Optional
+import anyio
 
 import dearpygui.dearpygui as dpg
 import yaml
 from fastapi import FastAPI
 from typing_extensions import override
 
-from gradio.components import CallbackGroup, Component
-from gradio.dummy import Dummy
-from gradio.layouts import Container
+from gradio.components import CallbackGroup, Component, Container
+from gradio.layouts import Column
 from gradio.themes import Theme
 from gradio.utils import TraceCalls, logger
 from gradio.warnings import warn_kwargs
@@ -24,7 +24,7 @@ class DummyServer:
         pass
 
 
-class Blocks(Container):
+class Blocks(Column):
     def __init__(
         self,
         *args,
@@ -49,36 +49,49 @@ class Blocks(Container):
         self.load_callback.append(fn)
 
     @override
-    def build_container(self):
+    def build_container(self, parent: Optional[Container]):
         return dpg.group()
 
     def launch(self, *args, height: int = 500, width: int | str = "100%", **kwargs):
         # logger.info(repr(self))
-        try:
-            Component.build()
-        except Exception as e:
-            with open("debug_layout.yml", "w") as f:
-                f.write(
-                    yaml.dump(
-                        Component.current_scope.debug_info(), indent=2, sort_keys=False
-                    )
-                )
-            # logger.error(e)
-            raise e
 
         def run():
+            try:
+                dpg.create_context()
+                dpg.configure_app(manual_callback_management=True)
+                Component.build()
+            except Exception as e:
+                with open("debug_layout.yml", "w") as f:
+                    f.write(
+                        yaml.dump(
+                            Component.current_scope.debug_info(),
+                            indent=2,
+                            sort_keys=False,
+                        )
+                    )
+                raise e
             dpg.create_viewport(
                 title=self.user_data.get("title", "Gradio"),
                 width=int(10.0 * int(width[:-1])) if isinstance(width, str) else width,
                 height=height,
                 small_icon=self.user_data.get("favicon_path", ""),
+                x_pos=0,
+                y_pos=0,
             )
             dpg.setup_dearpygui()
             dpg.show_viewport()
-            dpg.start_dearpygui()
+            dpg.set_primary_window("primary_window", True)
+            while dpg.is_dearpygui_running():
+                jobs = dpg.get_callback_queue()  # retrieves and clears queue
+                if jobs:
+                    for job in jobs:
+                        if job[0]:
+                            job[0](*job[1:])
+                dpg.render_dearpygui_frame()
             dpg.destroy_context()
 
-        threading.Thread(target=run).start()
+        self.t = threading.Thread(target=run)
+        self.t.start()
         return DummyApp(), "GUI", "GUI"
 
     def queue(self, *_, **__):

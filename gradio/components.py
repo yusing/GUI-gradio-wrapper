@@ -1,29 +1,32 @@
-from abc import abstractmethod
-from collections import abc
-from copy import deepcopy
-from functools import wraps
-from inspect import Traceback, getframeinfo, stack
+import json
 import os
 import random
 import traceback
-from typing_extensions import override
-import warnings
-from typing import Any, Callable, ContextManager, Iterable, Optional
+from abc import abstractmethod
+from copy import deepcopy
+from inspect import Traceback, stack
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Optional,
+    Sequence,
+)
 
 import dearpygui.dearpygui as dpg
 import numpy as np
-from PIL import Image as _Image
 import requests
-
+from PIL import Image as _Image
+from typing_extensions import override
 from gradio.utils import hex_to_rgba, logger
-from gradio.warnings import warn_kwargs, warn_unimplemented
+from gradio.warnings import warn_unimplemented
 
 
 class CallbackGroup:
     def __init__(self) -> None:
-        self.callbacks: list[Callable] = []
+        self.callbacks: list[Callable[[], None]] = []
 
-    def __call__(self) -> list[Any]:
+    def __call__(self, ele, app_data, user_data) -> list[Any]:
         return [fn() for fn in self.callbacks]
 
     def append(self, fn: Optional[Callable]):
@@ -65,7 +68,6 @@ class Component:
         elif add_to_scope:
             self.append_to_scope()
 
-    @abstractmethod
     def build_element(self) -> int | str:
         assert not isinstance(
             self, Container
@@ -73,41 +75,100 @@ class Component:
         raise NotImplementedError
 
     def append_to_scope(self):
+        from gradio.layouts import Tabs, Tab
+
         if Component.current_scope is None:
             Component.current_scope = Window()
-        Component.current_scope.local_scope.append(self)
+        if isinstance(Component.current_scope, Tabs) and not isinstance(self, Tab):
+            last_non_tabs_index = -1
+            while isinstance(Component.previous_scopes[last_non_tabs_index], Tabs):
+                last_non_tabs_index -= 1
+            Component.previous_scopes[last_non_tabs_index].local_scope.append(self)
+        else:
+            Component.current_scope.local_scope.append(self)
         if self.tag in Component.component_map:
             self.tag = f"{self.tag}_{dpg.generate_uuid()}"
         Component.component_map[self.tag] = self
 
-    def click(self, *args, **kwargs):
-        self.callback.append(kwargs.get("fn", args[0] if any(args) else None))
+    @staticmethod
+    def add_callback(
+        callback: CallbackGroup,
+        fn: Callable,
+        inputs: "Component" | Sequence["Component"] | None,
+        outputs: "Component" | Sequence["Component"],
+    ):
+        if not isinstance(inputs, Sequence):
+            inputs = [inputs]
+        if not isinstance(outputs, Sequence):
+            outputs = [outputs]
+
+        def handle_callback(
+            results: Sequence[Any] | Any | dict["Component", Any | dict[str, Any]]
+        ):
+            if isinstance(results, Sequence) and not isinstance(results, str):
+                if len(results) == len(outputs):  # type: ignore
+                    for result, output in zip(results, outputs):  # type: ignore
+                        output.set_value(result)
+                else:
+                    for output in outputs:  # type: ignore
+                        output.set_value(results)
+            elif isinstance(results, dict):
+                for output, value in results.items():
+                    if isinstance(value, dict):
+                        dpg.configure_item(output.tag, **value)
+                    else:
+                        output.set_value(value)
+            else:
+                for output in outputs:  # type: ignore
+                    output.set_value(results)
+
+        def run_callback():
+            if inputs is None:
+                results = fn()
+            else:
+                results = fn(*[input_.get_value() for input_ in inputs if input_])
+            if isinstance(results, ContextManager):
+                with results as results:
+                    handle_callback(results)
+            else:
+                handle_callback(results)
+
+        callback.append(run_callback)
+
+    def get_value(self):
+        return self.value
+
+    def set_value(self, value):
+        self.value = value
+        dpg.get_item_callback(self.tag)(self, None, None)
+
+    def click(
+        self,
+        fn: Callable,
+        inputs: "Component" | Sequence["Component"] | None = None,
+        outputs: "Component" | Sequence["Component"] = [],
+        *args,
+        **kwargs,
+    ):
+        Component.add_callback(self.callback, fn, inputs, outputs)
         return self
 
-    def release(self, *args, **kwargs):
-        self.drag_callback.append(kwargs.get("fn", args[0] if any(args) else None))
-        return self
-
-    @warn_unimplemented
-    def change(self, *args, **kwargs):
+    def release(
+        self,
+        fn: Callable,
+        inputs: "Component" | Sequence["Component"] | None = None,
+        outputs: "Component" | Sequence["Component"] = [],
+        *args,
+        **kwargs,
+    ):
+        Component.add_callback(self.drag_callback, fn, inputs, outputs)
         return self
 
     @warn_unimplemented
     def style(self, *args, **kwargs):
         return self
 
-    # @warn_unimplemented
-    # def input(self, *args, **kwargs):
-    #     return self
-
-    # @warn_unimplemented
-    # def edit(self, *args, **kwargs):
-    #     return self
-
-    # @warn_unimplemented
-    # def clear(self, *args, **kwargs):
-    #     return self
-    input = edit = clear = then = click
+    input = edit = clear = then = change = click
 
     @warn_unimplemented
     def submit(self, *args, **kwargs):
@@ -155,17 +216,9 @@ class Component:
     def traceback(self) -> Traceback:
         return self.user_data["traceback"]
 
-    def __enter__(self):
-        assert isinstance(
-            self, Container
-        ), "Only Container can be used as context manager"
-        Component.previous_scopes.append(Component.current_scope)
-        Component.current_scope = self
-        return self
-
-    def __exit__(self, *_):
-        Component.current_scope = Component.previous_scopes.pop()
-        assert Component.current_scope is not None, "No previous scope to exit to"
+    @property
+    def attributes(self):
+        return self.__dict__
 
     def __str__(self):
         return self.__class__.__name__
@@ -184,25 +237,19 @@ class Component:
         return info
 
     @staticmethod
-    def build(scope: Optional["Container"] = None):
-        from gradio.layouts import Tabs, Tab
-
+    def build(
+        scope: Optional["Container"] = None, parent: Optional["Container"] = None
+    ):
         if scope is None:
             assert Component.current_scope, "No scope to build"
             scope = Component.current_scope
         assert isinstance(scope, Container), f"Invalid container {scope}"
+        need_pop = False
         try:
-            with scope.build_container():
+            with scope.build_container(parent):
                 for ele in scope.local_scope:
                     if isinstance(ele, Container):
-                        if isinstance(ele, Tab) and not isinstance(scope, Tabs):
-                            with dpg.tab_bar(show=False):
-                                Component.build(ele)
-                        elif isinstance(scope, Tabs) and not isinstance(ele, Tab):
-                            with dpg.tab(show=False):
-                                Component.build(ele)
-                        else:
-                            Component.build(ele)
+                        Component.build(ele, scope)
                     else:
                         ele.__dict__.pop("custom_script_source", None)
                         try:
@@ -213,7 +260,7 @@ class Component:
                                 "element": ele.__class__.__name__,
                                 "traceback": traceback.format_exc().split("\n"),
                             }
-                            return
+                            raise e
                         assert not any(ele.local_scope), "Non-root element has children"
         except Exception as e:
             scope.user_data["build_error"] = {
@@ -222,6 +269,8 @@ class Component:
                 "traceback": traceback.format_exc().split("\n"),
             }
             raise e
+        if need_pop:
+            dpg.pop_container_stack()
 
 
 class Container(Component):
@@ -229,7 +278,18 @@ class Container(Component):
         excluded_attr.extend(["enabled", "default_value"])
         super().__init__(*args, **kwargs, excluded_attr=excluded_attr)
 
-    def build_container(self) -> ContextManager[int | str]:
+    def __enter__(self):
+        Component.previous_scopes.append(Component.current_scope)
+        Component.current_scope = self
+        return self
+
+    def __exit__(self, *_):
+        Component.current_scope = Component.previous_scopes.pop()
+        assert Component.current_scope is not None, "No previous scope to exit to"
+
+    def build_container(
+        self, parent: Optional["Container"]
+    ) -> ContextManager[int | str]:
         raise NotImplementedError
 
 
@@ -238,8 +298,16 @@ class Window(Container):
         super().__init__(*args, **kwargs)
 
     @override
-    def build_container(self) -> ContextManager[int | str]:
-        return dpg.window(no_title_bar=True, autosize=True)
+    def build_container(
+        self, parent: Optional["Container"] = None
+    ) -> ContextManager[int | str]:
+        return dpg.window(
+            tag="primary_window",
+            no_title_bar=True,
+            # modal=True,
+            no_saved_settings=True,
+            horizontal_scrollbar=True,
+        )
 
 
 class IOComponent(Component):
@@ -274,11 +342,19 @@ class Text(Component):
             elem_classes: An optional list of strings that are assigned as the classes of this component in the HTML DOM. Can be used for targeting CSS styles.
             type: The type of textbox. One of: 'text', 'password', 'email', Default is 'text'.
         """
-        super().__init__(*args, **kwargs, excluded_attr=["enabled"])
+        super().__init__(*args, **kwargs)
+        self.readonly = self.__dict__.pop("enabled", False)
+        if self.default_value is None:
+            self.default_value = ""
 
     @override
     def build_element(self):
-        return dpg.add_input_text(**self.__dict__)
+        return dpg.add_input_text(
+            **self.__dict__,
+            hint=self.user_data.get("placeholder", ""),
+            multiline=self.user_data.get("max_lines", 1) > 1,
+            tab_input=True,
+        )
 
 
 class Number(Component):
@@ -306,15 +382,18 @@ class Number(Component):
             precision: Precision to round input/output to. If set to 0, will round to nearest integer and convert type to int. If None, no rounding happens.
         """
         super().__init__(*args, **kwargs)
+        if self.default_value is None:
+            self.default_value = 0.0
+        self.readonly = self.__dict__.pop("enabled", False)
 
     @override
     def build_element(self):
-        readonly = self.__dict__.pop("enabled", False)
-        if readonly:
-            return dpg.add_input_float(**self.__dict__)
-        else:
-            self.__dict__.pop("callback", None)
-            return dpg.add_text(**self.__dict__)
+        return dpg.add_input_float(**self.__dict__, min_clamped=True, max_clamped=True)
+
+    @override
+    def set_value(self, value):
+        assert isinstance(value, (int, float)), f"Invalid number type {type(value)}"
+        return super().set_value(float(value))
 
 
 class Image(Component):
@@ -348,43 +427,62 @@ class Image(Component):
             mirror_webcam: If True webcam will be mirrored. Default is True.
             brush_radius: Size of the brush for Sketch. Default is None which chooses a sensible default
         """
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs, excluded_attr=["callback"])
         # TODO: Handle crop and resize to `shape`
         # TODO: Handle invert_colors
         # TODO: Handle source
         if isinstance(self.default_value, np.ndarray):
-            self.default_value = _Image.fromarray(self.default_value)
+            if self.default_value.dtype == np.uint8:
+                self.default_value = self.default_value / 255.0
+            elif self.default_value.dtype == np.int8:
+                self.default_value = (self.default_value + 128) / 255.0
         elif isinstance(self.default_value, str):
             if os.path.exists(self.default_value):
                 self.default_value = _Image.open(self.default_value)
-            elif self.default_value.startswith("http"):
+
+            elif self.default_value.startswith("http"):  # TODO: check if this works
                 self.default_value = _Image.open(
                     requests.get(self.default_value, stream=True).content
                 )
             else:
                 raise ValueError(f"Invalid image path: {self.default_value}")
-        elif isinstance(self.default_value, _Image.Image) or self.default_value is None:
-            pass
-        else:
+        if isinstance(self.default_value, _Image.Image):
+            self.default_value.putalpha(255)
+            self.default_value = np.array(self.default_value) / 255.0
+        elif self.default_value is not None:
             raise ValueError(f"Invalid image type: {type(self.default_value)}")
         self.default_value = (
-            self.default_value.convert("RGB")
-            if self.default_value
-            else _Image.new("RGB", getattr(self, "shape", (300, 300)))
+            self.default_value
+            if self.default_value is not None
+            else np.zeros(getattr(self, "shape", (300, 300, 4)))
         )
         with dpg.texture_registry():
-            self.texture_tag = dpg.add_static_texture(
-                width=self.default_value.width,
-                height=self.default_value.height,
+            self.texture_tag = dpg.add_dynamic_texture(
+                width=self.default_value.shape[0],
+                height=self.default_value.shape[1],
                 default_value=self.default_value,
-                tag=f"{self.tag}_texture",
+                tag=f"{self.tag}_texture_{dpg.generate_uuid()}",
             )
         del self.default_value
 
     @override
     def build_element(self) -> int | str:
-        self.__dict__.pop("callback", None)
         return dpg.add_image(**self.__dict__)
+
+    @override
+    def set_value(self, value):
+        raise NotImplementedError
+
+    @override
+    def change(
+        self,
+        fn: Callable[..., Any],
+        inputs: "Component" | Sequence["Component"] | None = None,
+        outputs: "Component" | Sequence["Component"] = [],
+        *args,
+        **kwargs,
+    ):
+        return None
 
 
 class CheckboxGroup(Component):
@@ -418,6 +516,8 @@ class CheckboxGroup(Component):
         """
         self.choices = choices if choices else []
         super().__init__(*args, **kwargs)
+        if self.default_value is None:
+            self.default_value = []
 
     @override
     def build_element(self):
@@ -426,10 +526,25 @@ class CheckboxGroup(Component):
                 dpg.add_checkbox(
                     label=choice,
                     tag=f"{self.tag}_{choice}",
+                    callback=self.callback,
                     default_value=choice
                     in self.default_value,  # TODO: check if value is list[Callable]
                 )
         return self.tag
+
+    @override
+    def get_value(self):
+        return [
+            dpg.get_item_label(f"{self.tag}_{choice}")
+            for choice in self.choices
+            if dpg.get_value(f"{self.tag}_{choice}")
+        ]
+
+    @override
+    def set_value(self, values):
+        for choice in self.choices:
+            dpg.set_value(f"{self.tag}_{choice}", choice in values)
+            dpg.get_item_callback(f"{self.tag}_{choice}")(None, None, None)
 
 
 class Radio(Component):
@@ -564,7 +679,9 @@ class Label(Component):
 
     @override
     def build_element(self):
-        return dpg.add_text(**self.__dict__)
+        return dpg.add_text(
+            **self.__dict__, color=hex_to_rgba(self.user_data.get("color", "#FFFFFF"))
+        )
 
 
 class File(Component):
@@ -576,6 +693,7 @@ class File(Component):
     def build_element(self):
         if callable(self.default_path):
             self.default_path = self.default_path()
+        return dpg.add_dummy()  # TODO: fix this
         return dpg.add_file_dialog(**self.__dict__)
 
 
@@ -595,6 +713,7 @@ class Slider(Component):
         minimum: float = 0,
         maximum: float = 100,
         value: float | Callable | None = None,
+        step: float | None = None,
         **kwargs,
     ):
         """
@@ -614,7 +733,7 @@ class Slider(Component):
             randomize: If True, the value of the slider when the app loads is taken uniformly at random from the range given by the minimum and maximum.
         """
         self.no_input = not kwargs.pop("interactive", True)
-        super().__init__(**kwargs)
+        super().__init__(**kwargs, step=step if step else 1)
         self.min_value = minimum
         self.max_value = maximum
         self.default_value = value
@@ -627,7 +746,16 @@ class Slider(Component):
             "randomize", self.default_value is None
         ):
             self.default_value = random.uniform(self.min_value, self.max_value)
-        return dpg.add_slider_float(**self.__dict__, clamped=True)
+            self.default_value = type(self.user_data["step"])(self.default_value)
+        if isinstance(self.user_data["step"], float):
+            return dpg.add_slider_float(**self.__dict__, clamped=True)
+        else:
+            return dpg.add_slider_int(**self.__dict__, clamped=True)
+
+    @override
+    def set_value(self, value):
+        assert isinstance(value, (int, float)), "Invalid slider type"
+        return super().set_value(type(self.user_data["step"])(value))
 
 
 class Button(Component):
@@ -641,6 +769,7 @@ class Button(Component):
 
     def __init__(
         self,
+        value: str | Callable = "",
         *args,
         **kwargs,
     ):
@@ -654,9 +783,12 @@ class Button(Component):
             elem_classes: An optional list of strings that are assigned as the classes of this component in the HTML DOM. Can be used for targeting CSS styles.
         """
         super().__init__(*args, **kwargs, excluded_attr=["default_value"])
+        self.label = value
 
     @override
     def build_element(self):
+        if callable(self.label):
+            self.label = self.label()
         return dpg.add_button(**self.__dict__)
 
 
@@ -674,6 +806,7 @@ class CheckBox(Component):
 class Gallery(Component):
     @override
     def build_element(self) -> int | str:
+        return dpg.add_dummy()  # TODO: fix this
         self.__dict__.pop("callback", None)
         images = self.__dict__.pop("default_value")
         if callable(images):
@@ -688,10 +821,13 @@ class Gallery(Component):
 
 
 class DataFrame(Component):
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        if not hasattr(self, "headers"):
-            self.headers: list[str] = []
+    def __init__(
+        self, value: list[list[Any]] | Callable | None = None, *args, **kwargs
+    ) -> None:
+        super().__init__(
+            *args, **kwargs, excluded_attr=["default_value", "enabled", "drag_callback"]
+        )
+        self.user_data["value"] = value if value else []
 
     @override
     def build_element(self) -> int | str:
@@ -716,16 +852,15 @@ class DataFrame(Component):
         wrap: bool = False,
         **kwargs,
         """
+        headers = self.__dict__.pop("headers", [])
         with dpg.table(
             header_row=True,
-            tag=self.tag,
-            show=self.show,
-            enabled=self.enabled,
+            show=self.show if hasattr(self, "show") else True,
             **self.__dict__,
         ):
-            for header in self.headers:
+            for header in headers:
                 dpg.add_table_column(label=header)
-            for row in self.default_value:
+            for row in self.user_data["value"]:
                 with dpg.table_row():
                     for col in row:
                         dpg.add_text(str(col))
@@ -743,15 +878,36 @@ class Variable(State):
     pass
 
 
+class ReadOnlyText(Component):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs, excluded_attr=["callback", "enabled"])
+
+    @override
+    def change(self, *args, **kwargs):
+        pass
+
+    @override
+    def build_element(self):
+        return dpg.add_text(**self.__dict__)
+
+
 class Code(Text):
     pass
 
 
-class HTML(Text):
+class HTML(ReadOnlyText):
+    pass
+
+
+class Markdown(ReadOnlyText):
     pass
 
 
 class TextArea(Text):
+    pass
+
+
+class Textbox(Text):
     pass
 
 
@@ -769,16 +925,18 @@ class HighlightedText(Text):
     pass
 
 
-class Json(Text):
-    pass
+class Json(ReadOnlyText):
+    @override
+    def build_element(self):
+        if isinstance(self.default_value, dict):
+            self.default_value = json.dumps(self.default_value, indent=4)
+        return super().build_element()
 
 
 Checkbox = CheckBox
 Checkboxgroup = CheckboxGroup
 Dataframe = DataFrame
 Dropdown = DropDown
-Textbox = Text
-Markdown = HTML
 JSON = Json
 
 Highlightedtext = HighlightedText

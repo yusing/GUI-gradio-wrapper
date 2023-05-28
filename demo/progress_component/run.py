@@ -1,7 +1,10 @@
 import gradio as gr
-import time 
+import time
 
-css = "footer {display: none !important;} .gradio-container {min-height: 0px !important;}"
+css = (
+    "footer {display: none !important;} .gradio-container {min-height: 0px !important;}"
+)
+
 
 def load_set(progress=gr.Progress()):
     imgs = [None] * 24

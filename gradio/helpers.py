@@ -36,5 +36,8 @@ def update(**kwargs) -> dict:
           live=True,
         ).launch()
     """
-    kwargs["__type__"] = "generic_update"
+    if "visible" in kwargs:
+        kwargs["show"] = kwargs.pop("visible")
+    if "interactive" in kwargs:  #! May have problems
+        kwargs["readonly"] = not kwargs.pop("interactive")
     return kwargs

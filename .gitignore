@@ -60,3 +60,5 @@ node_modules
 public/build/
 test-results
 client/js/test.js
+
+debug_layout.yml

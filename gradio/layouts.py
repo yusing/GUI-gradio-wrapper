@@ -1,5 +1,6 @@
+from typing import Optional
 from typing_extensions import override
-from gradio.components import Container
+from gradio.components import Component, Container
 import dearpygui.dearpygui as dpg
 
 
@@ -8,19 +9,19 @@ class Group(Container):
         super().__init__(*args, **kwargs, excluded_attr=["callback"])
 
     @override
-    def build_container(self):
+    def build_container(self, parent: Optional["Container"]):
         return dpg.group(**self.__dict__)
 
 
 class Row(Group):
     @override
-    def build_container(self):
+    def build_container(self, parent: Optional["Container"]):
         return dpg.group(**self.__dict__, horizontal=True)
 
 
 class Column(Group):
     @override
-    def build_container(self):
+    def build_container(self, parent: Optional["Container"]):
         return dpg.group(**self.__dict__, width=self.user_data.get("min_width", 0))
 
 
@@ -29,7 +30,7 @@ class Tabs(Container):
         super().__init__(*args, **kwargs, excluded_attr=["drag_callback"])
 
     @override
-    def build_container(self):
+    def build_container(self, parent: Optional["Container"]):
         return dpg.tab_bar(**self.__dict__)
 
     @property
@@ -42,7 +43,10 @@ class Tab(Container):
         super().__init__(*args, **kwargs, excluded_attr=["callback", "drag_callback"])
 
     @override
-    def build_container(self):
+    def build_container(self, parent: Optional["Container"]):
+        if not isinstance(parent, Tabs):
+            with dpg.tab_bar():
+                return dpg.tab(**self.__dict__)
         return dpg.tab(**self.__dict__)
 
 
@@ -51,7 +55,7 @@ class Accordion(Container):
         super().__init__(*args, **kwargs, excluded_attr=["callback"])
 
     @override
-    def build_container(self):
+    def build_container(self, parent: Optional["Container"]):
         return dpg.collapsing_header(
             **self.__dict__,
             default_open=self.user_data.get("open", True),
