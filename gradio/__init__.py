@@ -5,6 +5,20 @@ import dearpygui.dearpygui as dpg
 
 dpg.create_context()
 dpg.configure_app(manual_callback_management=True)
+with dpg.font_registry():
+    import os
+
+    if os.name == "nt":
+        import ctypes
+
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+
+    roboto_medium = dpg.add_font(
+        os.path.join(os.path.dirname(__file__), "fonts/RobotoMono-Medium.ttf"),
+        16 * 2,
+    )
+    dpg.bind_font(roboto_medium)
+    dpg.set_global_font_scale(0.5)
 
 import gradio.processing_utils
 from gradio.blocks import Block, Blocks

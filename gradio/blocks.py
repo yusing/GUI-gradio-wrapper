@@ -1,5 +1,7 @@
 import json
+import os
 import threading
+import traceback
 from typing import Any, Callable, Literal, Optional
 import anyio
 
@@ -81,14 +83,21 @@ class Blocks(Column):
             dpg.setup_dearpygui()
             dpg.show_viewport()
             dpg.set_primary_window("primary_window", True)
+            dpg.save_init_file("dearpygui.ini")
             while dpg.is_dearpygui_running():
                 jobs = dpg.get_callback_queue()  # retrieves and clears queue
                 if jobs:
                     for job in jobs:
                         if job[0]:
-                            job[0](*job[1:])
+                            try:
+                                job[0](*job[1:])
+                            except Exception as e:
+                                logger.error(e, stacklevel=True)
+                                logger.error(traceback.format_exc())
+                                os._exit(1)
                 dpg.render_dearpygui_frame()
             dpg.destroy_context()
+            os._exit(1)
 
         self.t = threading.Thread(target=run)
         self.t.start()

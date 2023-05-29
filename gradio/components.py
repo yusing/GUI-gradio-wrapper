@@ -11,6 +11,7 @@ from typing import (
     ContextManager,
     Optional,
     Sequence,
+    Union,
 )
 
 import dearpygui.dearpygui as dpg
@@ -20,6 +21,7 @@ from PIL import Image as _Image
 from typing_extensions import override
 from gradio.utils import hex_to_rgba, logger
 from gradio.warnings import warn_unimplemented
+from gradio.helpers import update as _update
 
 
 class CallbackGroup:
@@ -114,8 +116,10 @@ class Component:
                         output.set_value(results)
             elif isinstance(results, dict):
                 for output, value in results.items():
+                    if isinstance(output, str):
+                        continue  # TODO: Handle this
                     if isinstance(value, dict):
-                        dpg.configure_item(output.tag, **value)
+                        dpg.configure_item(output.tag, **_update(**value))
                     else:
                         output.set_value(value)
             else:
@@ -123,6 +127,8 @@ class Component:
                     output.set_value(results)
 
         def run_callback():
+            print("Inputs:", inputs)
+            print("Outputs:", outputs)
             if inputs is None:
                 results = fn()
             else:
@@ -140,27 +146,36 @@ class Component:
 
     def set_value(self, value):
         self.value = value
-        dpg.get_item_callback(self.tag)(self, None, None)
+        child_cb = dpg.get_item_callback(self.tag)
+        if child_cb:
+            child_cb(self, None, None)
+
+    def update(**kwargs):
+        return _update(**kwargs)
 
     def click(
         self,
-        fn: Callable,
+        fn: Callable | None = None,
         inputs: "Component" | Sequence["Component"] | None = None,
         outputs: "Component" | Sequence["Component"] = [],
         *args,
         **kwargs,
     ):
+        if fn is None:
+            return self
         Component.add_callback(self.callback, fn, inputs, outputs)
         return self
 
     def release(
         self,
-        fn: Callable,
+        fn: Callable | None = None,
         inputs: "Component" | Sequence["Component"] | None = None,
         outputs: "Component" | Sequence["Component"] = [],
         *args,
         **kwargs,
     ):
+        if fn is None:
+            return self
         Component.add_callback(self.drag_callback, fn, inputs, outputs)
         return self
 
@@ -305,7 +320,7 @@ class Window(Container):
             tag="primary_window",
             no_title_bar=True,
             # modal=True,
-            no_saved_settings=True,
+            # no_saved_settings=True,
             horizontal_scrollbar=True,
         )
 
@@ -544,7 +559,9 @@ class CheckboxGroup(Component):
     def set_value(self, values):
         for choice in self.choices:
             dpg.set_value(f"{self.tag}_{choice}", choice in values)
-            dpg.get_item_callback(f"{self.tag}_{choice}")(None, None, None)
+            child_cb = dpg.get_item_callback(f"{self.tag}_{choice}")
+            if child_cb:
+                child_cb(None, None, None)
 
 
 class Radio(Component):
@@ -586,6 +603,10 @@ class Radio(Component):
             horizontal=True,
             **self.__dict__,
         )
+
+    @override
+    def get_value(self):
+        return self.items.index(dpg.get_value(self.tag))
 
 
 class ColorPicker(Component):
@@ -693,7 +714,7 @@ class File(Component):
     def build_element(self):
         if callable(self.default_path):
             self.default_path = self.default_path()
-        return dpg.add_dummy()  # TODO: fix this
+        return dpg.add_spacer(tag=self.tag)  # TODO: fix this
         return dpg.add_file_dialog(**self.__dict__)
 
 
@@ -806,7 +827,7 @@ class CheckBox(Component):
 class Gallery(Component):
     @override
     def build_element(self) -> int | str:
-        return dpg.add_dummy()  # TODO: fix this
+        return dpg.add_spacer(tag=self.tag)  # TODO: fix this
         self.__dict__.pop("callback", None)
         images = self.__dict__.pop("default_value")
         if callable(images):

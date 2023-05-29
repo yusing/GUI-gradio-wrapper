@@ -39,14 +39,16 @@ class Tabs(Container):
 
 
 class Tab(Container):
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs, excluded_attr=["callback", "drag_callback"])
+    def __init__(self, label: str, *args, **kwargs) -> None:
+        super().__init__(
+            *args, **kwargs, label=label, excluded_attr=["callback", "drag_callback"]
+        )
 
     @override
     def build_container(self, parent: Optional["Container"]):
-        if not isinstance(parent, Tabs):
-            with dpg.tab_bar():
-                return dpg.tab(**self.__dict__)
+        # if not isinstance(parent, Tabs):
+        #     with dpg.tab_bar():
+        #         return dpg.tab(**self.__dict__)
         return dpg.tab(**self.__dict__)
 
 

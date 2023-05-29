@@ -40,4 +40,6 @@ def update(**kwargs) -> dict:
         kwargs["show"] = kwargs.pop("visible")
     if "interactive" in kwargs:  #! May have problems
         kwargs["readonly"] = not kwargs.pop("interactive")
+    if "__type__" in kwargs:
+        del kwargs["__type__"]
     return kwargs
