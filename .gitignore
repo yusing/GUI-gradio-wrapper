@@ -62,3 +62,4 @@ test-results
 client/js/test.js
 
 debug_layout.yml
+test.py

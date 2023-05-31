@@ -1,27 +1,9 @@
 import faulthandler
 
 faulthandler.enable()
-import dearpygui.dearpygui as dpg
-
-dpg.create_context()
-dpg.configure_app(manual_callback_management=True)
-with dpg.font_registry():
-    import os
-
-    if os.name == "nt":
-        import ctypes
-
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-
-    roboto_medium = dpg.add_font(
-        os.path.join(os.path.dirname(__file__), "fonts/RobotoMono-Medium.ttf"),
-        16 * 2,
-    )
-    dpg.bind_font(roboto_medium)
-    dpg.set_global_font_scale(0.5)
 
 import gradio.processing_utils
-from gradio.blocks import Block, Blocks
+from gradio.blocks import Block, Blocks, Interface
 from gradio.components import (  # JSON,; AnnotatedImage,; Annotatedimage,; BarPlot,; Carousel,; Chatbot,; Dataset,; Interpretation,; LinePlot,; Model3D,; Plot,; ScatterPlot,; StatusTracker,; TimeSeries,; Timeseries,; UploadButton,
     HTML,
     JSON,
@@ -54,6 +36,7 @@ from gradio.components import (  # JSON,; AnnotatedImage,; Annotatedimage,; BarP
     Textbox,
     Variable,
     Video,
+    Container as _Container,
 )
 from gradio.helpers import update
 from gradio.layouts import Accordion, Box, Column, Group, Row, Tab, TabItem, Tabs
@@ -75,5 +58,7 @@ from gradio.templates import (
     Webcam,
 )
 from gradio.themes import Theme
+import gradio.themes as themes
 
+_Container.init_scope()
 __version__ = "3.32.0"

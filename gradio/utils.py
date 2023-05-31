@@ -1,8 +1,16 @@
 from functools import wraps
+from io import BytesIO
 import logging
+import os
 import sys
+from typing import Callable, Optional
+import numpy as np
+import base64
+import PIL.Image as _Image
+import requests
 
 logger = logging.getLogger(__name__)
+EMPTY_IMG = "iVBORw0KGgoAAAANSUhEUgAAASwAAAEsCAQAAADTdEb+AAACHElEQVR42u3SMQ0AAAzDsJU/6aGo+tgQouSgIBJgLIyFscBYGAtjgbEwFsYCY2EsjAXGwlgYC4yFsTAWGAtjYSwwFsbCWGAsjIWxwFgYC2OBsTAWxgJjYSyMBcbCWBgLjIWxMBYYC2NhLDAWxsJYYCyMhbHAWBgLY4GxMBbGAmNhLIwFxsJYGAuMhbEwFhgLY2EsMBbGwlhgLIyFscBYGAtjgbEwFsYCY2EsjAXGwlgYC2OBsTAWxgJjYSyMBcbCWBgLjIWxMBYYC2NhLDAWxsJYYCyMhbHAWBgLY4GxMBbGAmNhLIwFxsJYGAuMhbEwFhgLY2EsMBbGwlhgLIyFscBYGAtjgbEwFsYCY2EsjAXGwlgYC4yFsTAWGAtjYSwwFsbCWGAsjIWxwFgYC2OBsTAWxgJjYSyMBcbCWBgLjIWxMBbGAmNhLIwFxsJYGAuMhbEwFhgLY2EsMBbGwlhgLIyFscBYGAtjgbEwFsYCY2EsjAXGwlgYC4yFsTAWGAtjYSwwFsbCWGAsjIWxwFgYC2OBsTAWxgJjYSyMBcbCWBgLjIWxMBYYC2NhLDAWxsJYYCyMhbHAWBgLY4GxMBbGAmNhLIwFxsJYGAuMhbEwFhgLY2EsjCUBxsJYGAuMhbEwFhgLY2EsMBbGwlhgLIyFscBYGAtjgbEwFsYCY2EsjAXGwlgYC4yFsTAWGAtjYSwwFsbCWGAsjIWxwFjsPeVaAS0/Qs6MAAAAAElFTkSuQmCC"
 
 
 def hex_to_rgba(hex_color: str) -> tuple[int, ...]:
@@ -16,6 +24,29 @@ def hex_to_rgba(hex_color: str) -> tuple[int, ...]:
         return tuple(int(hex_color[i : i + 2], 16) for i in (2, 4, 6, 0))
     else:
         raise ValueError(f"Hex color must be 6 or 8 digits. Got {hex_color}.")
+
+
+def to_base64_img(
+    img: np.ndarray | _Image.Image | str | Callable | None,
+) -> tuple[str, Optional[int], Optional[int]]:
+    if callable(img):
+        img = img()
+    if img is None:
+        return EMPTY_IMG, 300, 300
+    if isinstance(img, str):  # path or base64 string
+        if os.path.exists(img):
+            img = _Image.open(img)
+        elif img.startswith("http"):
+            img = _Image.open(BytesIO(requests.get(img).content))
+        else:
+            assert len(img) % 4 == 0, "Base64 string is invalid."
+            return img, None, None
+    elif isinstance(img, np.ndarray):
+        img = _Image.fromarray(img)
+    byteio = BytesIO()
+    img.save(byteio, format="PNG")
+    img_b64 = base64.b64encode(byteio.getvalue()).decode("utf-8")
+    return img_b64, img.width, img.height
 
 
 class TraceCalls(object):
